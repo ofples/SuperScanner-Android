@@ -198,14 +198,17 @@ class ScanUxRegressionTest {
         val pages = seedPages(testStore, count = 2, result = "synthetic saved result")
         val viewModel = launch(testStore)
 
-        compose.onNodeWithTag("clear_pages").assertExists().performClick()
+        compose.onNodeWithTag("clear_pages").assertExists().performScrollTo().performClick()
+        compose.waitUntil(5_000) { viewModel.ui.value.showDiscardDialog }
+        compose.waitUntil(5_000) { runCatching { compose.onNodeWithText("Cancel").assertExists() }.isSuccess }
         compose.onNodeWithText("Cancel").performClick()
         compose.waitUntil(5_000) { !viewModel.ui.value.showDiscardDialog }
         assertEquals(pages.map(CapturedPage::id), viewModel.ui.value.pages.map(CapturedPage::id))
         assertEquals("synthetic saved result", viewModel.ui.value.resultText)
         assertEquals(settings, testStore.loadSettings())
 
-        compose.onNodeWithTag("clear_pages").performClick()
+        compose.onNodeWithTag("clear_pages").performScrollTo().performClick()
+        compose.waitUntil(5_000) { viewModel.ui.value.showDiscardDialog }
         val clearActions = compose.onAllNodesWithText("Clear pages")
         assertEquals(2, clearActions.fetchSemanticsNodes().size)
         clearActions[1].performClick()

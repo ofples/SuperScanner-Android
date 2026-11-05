@@ -70,6 +70,10 @@ class SampleScanExperienceInstrumentedTest {
         compose.waitForIdle()
         val previousLiveImage = captureLatestFrame()
         try {
+            compose.onNodeWithTag("next_sample_page").performScrollTo()
+            compose.waitUntil(5_000) {
+                runCatching { compose.onNodeWithTag("next_sample_page").assertIsEnabled() }.isSuccess
+            }
             compose.onNodeWithTag("next_sample_page").performClick()
             compose.waitUntil(10_000) {
                 captureLatestFrame().useBitmap { !previousLiveImage.sameAs(it) }

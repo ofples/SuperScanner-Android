@@ -96,7 +96,9 @@ class ScannerWorkflowTest {
         // The dedicated regression below exercises the actual held-drag path across the row viewport.
         vm.movePage(capturedIds[1], -1)
         compose.waitUntil(5_000) { vm.ui.value.pages.map { it.id } == capturedIds.reversed() }
-        compose.onNodeWithTag("remove_page_${capturedIds[1]}").performClick()
+        compose.onNodeWithTag("remove_page_${capturedIds[1]}").performScrollTo().performClick()
+        compose.waitUntil(5_000) { vm.ui.value.showDeletePageId == capturedIds[1] }
+        compose.waitUntil(5_000) { runCatching { compose.onNodeWithText("Delete").assertExists() }.isSuccess }
         compose.onNodeWithText("Delete").performClick()
         compose.waitUntil(10_000) { vm.ui.value.pages.size == 1 && !vm.ui.value.isSavingCapture }
         val retainedId = vm.ui.value.pages.single().id
