@@ -145,6 +145,20 @@ class SampleScanExperienceInstrumentedTest {
         compose.onNodeWithTag("view_existing_text").performClick()
         compose.onNodeWithTag("recognition_result_text").assertExists()
         assertEquals(expectedText, store.loadSession().resultText)
+
+        // Reopening the saved sample result while a later sample capture is pending must keep
+        // the no-provider disclaimer. The sample-only offline path must never show the live
+        // provider warning merely because an earlier result is already saved.
+        compose.onNodeWithTag("back_to_scan").performScrollTo().performClick()
+        compose.onNodeWithTag("snap_button").performScrollTo().performClick()
+        compose.waitUntil(15_000) { store.loadSession().pages.size == 1 }
+        compose.onNodeWithTag("view_existing_text").performScrollTo().performClick()
+        assertEquals(1, store.loadSession().pages.size)
+        assertEquals(expectedText, store.loadSession().resultText)
+        compose.onNodeWithTag("sample_transcript_label").assertExists()
+        compose.onNodeWithText("Recognize again").assertExists()
+        compose.onNodeWithText("Recognizing again sends these pages to the selected provider.")
+            .assertDoesNotExist()
     }
 
     @After

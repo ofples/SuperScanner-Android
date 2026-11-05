@@ -756,7 +756,7 @@ private fun ResultScreen(state: AppUiState, vm: AppViewModel, context: Context) 
                 modifier = Modifier.fillMaxWidth().height(54.dp).testTag("recognize_retry")) {
                 Text(if (state.resultText.isNotBlank()) "Recognize again" else if (state.recognitionError.isNotBlank()) "Try recognition again" else "Recognize pages")
             }
-            if (state.resultText.isNotBlank()) Text("Recognizing again sends these pages to the selected provider.",
+            if (state.resultText.isNotBlank() && !vm.isSample) Text("Recognizing again sends these pages to the selected provider.",
                 style = MaterialTheme.typography.bodySmall)
         }
         if (state.isRecognizing) {
