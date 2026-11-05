@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#315e55">
+  <title>Privacy policy — SuperScanner</title>
+  <style>
+    :root{color-scheme:light;--teal:#315e55;--paper:#f5f2e9;--ink:#26332f;--muted:#51615b;--line:#d8ddd7}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:17px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
+    header{background:var(--teal);color:var(--paper);padding:2.2rem max(1rem,calc((100vw - 860px)/2)) 2rem}main{max-width:860px;margin:0 auto;padding:1.5rem 1rem 4rem}
+    h1,h2{line-height:1.2}h1{font-size:clamp(2rem,7vw,3.3rem);margin:.6rem 0}h2{font-size:1.35rem;color:var(--teal);margin:2.1rem 0 .6rem}.meta{color:#e0e8e1}p,li{max-width:75ch}a{color:#1d5a4d;text-underline-offset:.2em}footer{border-top:1px solid var(--line);margin-top:3rem;padding-top:1.5rem;color:var(--muted);font-size:.92rem}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Privacy policy</h1>
+    <p class="meta">SuperScanner · Effective November 5, 2026</p>
+  </header>
+  <main>
+    <p>SuperScanner is an independent companion app for people who use Supernote devices. It is not affiliated with or endorsed by Ratta, Supernote, or OpenAI. This policy explains how the app handles information when you use the offline sample, live capture, recognition, sharing, or optional Supernote Linking.</p>
+
+    <h2>Who operates the app and how to contact us</h2>
+    <p>SuperScanner is maintained as an independent project. For privacy or support questions, email <a href="mailto:plesserofer@gmail.com">plesserofer@gmail.com</a>. SuperScanner does not create a separate user account on a developer-operated server.</p>
+
+    <h2>Offline sample</h2>
+    <p>The sample contains fictional notebook pages and a prepared transcript. It uses separate local app storage and does not connect to a Supernote, call OpenAI, require an OpenAI key, or use ChatGPT sign-in.</p>
+
+    <h2>Information kept on your phone</h2>
+    <p>When you use live capture, the app stores selected page images and editable recognized text in app-private storage. It also stores your recognition settings, such as the selected provider and model, prompt, glossary, additional instructions, and a local network address you entered or used for reconnecting. Successful recognition clears captured page files after the result is saved; the resulting text remains available for editing. Pages that are not successfully recognized remain until you remove them or clear the app's storage.</p>
+    <p>If you choose an OpenAI API key, the app stores it in encrypted app preferences using Android Keystore-backed encryption. If you sign in with ChatGPT, OpenAI's consent flow may return basic identity information such as a name, email address, or profile picture, as well as authorization data. The app uses a verified account identifier and email when supplied and keeps the returned session data in the same encrypted local store. These credentials are not sent to a SuperScanner server because no such server is used.</p>
+    <p>Captured pages, text, prompts, and settings are stored in the app's private device files. They are not end-to-end encrypted. Use Android Settings to clear SuperScanner's app storage, or uninstall the app, to remove the app-private copy. A saved Gallery image, a file shared to another app, phone clipboard contents, data already sent to OpenAI, and content typed or copied on a Supernote are separate copies and are not removed by clearing this app.</p>
+
+    <h2>OpenAI recognition and ChatGPT sign-in</h2>
+    <p>Recognition is optional. Before the first live recognition upload, SuperScanner presents a <strong>“Send pages to OpenAI?”</strong> dialog. It explains that the selected page images and recognition prompt, glossary, and additional guidance go to OpenAI for transcription. The dialog identifies whether the request may use a ChatGPT plan allowance or is billed to the user's OpenAI API account, links to this privacy policy, and offers Continue and Cancel. Cancel sends no recognition request; capture, save, and share remain available. SuperScanner remembers the confirmation for this disclosure version and presents the dialog again if the disclosure changes. After confirmation, each user-requested recognition sends the selected page images, prompt, optional glossary and additional instructions, and model choice directly to OpenAI over HTTPS. OpenAI returns the recognition response to the app, which saves the final text locally. The app sets the Responses API <code>store</code> option to false; this does not guarantee zero retention or override OpenAI's other data controls.</p>
+    <p>For <strong>OpenAI API</strong> mode, you provide your own API key. The key is used to authorize requests to the OpenAI API and is sent to OpenAI over HTTPS. API usage and charges are separate from a ChatGPT subscription. OpenAI's API data controls, retention limits, and any account-level data-sharing choices apply. OpenAI states that API data is not used to train models by default unless the account opts in; abuse-monitoring logs may include prompts and responses and are generally retained for up to 30 days, subject to OpenAI's stated exceptions.</p>
+    <p>For <strong>ChatGPT plan</strong> mode, you may sign in through OpenAI's Sign in with ChatGPT flow and separately authorize eligible plan usage. OpenAI's flow may provide basic identity information such as your account identifier and email; the app stores the returned identifier, email when supplied, and session credentials locally. The app does not access your ChatGPT conversations or memories. Requests are made for your own activity and are subject to OpenAI eligibility, plan limits, account settings, and applicable OpenAI terms. ChatGPT plan processing and data controls are separate from API account settings; review how your account handles content and model improvement before authorizing plan use.</p>
+    <p>SuperScanner does not control OpenAI's independent processing, retention, security, or model-improvement settings. Read the <a href="https://developers.openai.com/api/docs/guides/your-data">OpenAI API data controls</a>, <a href="https://help.openai.com/en/articles/20001410-sign-in-with-chatgpt">Sign in with ChatGPT privacy information</a>, and <a href="https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites">ChatGPT plan usage guidance</a>. Do not send sensitive material unless you are comfortable with the selected provider's policies and settings.</p>
+
+    <h2>Disconnecting providers and deleting information</h2>
+    <p>You can clear the saved API key in Settings. Disconnecting ChatGPT asks OpenAI to revoke the connected session and removes its credentials from the app's local store; if OpenAI cannot confirm remote revocation, also remove SuperScanner from ChatGPT's connected-app settings. To remove other local app data, clear app storage in Android Settings or uninstall the app. SuperScanner has no separate server account to delete and does not provide a developer-hosted account-deletion service.</p>
+    <p>Clearing or uninstalling SuperScanner does not delete information held by OpenAI, files you exported to Gallery or another app, clipboard history maintained by Android, or text already sent to a Supernote. Manage those copies with the relevant provider, device, or app.</p>
+
+    <h2>Sharing pages and text</h2>
+    <p>If you tap Share or Save, Android passes the page image to the destination you select or writes a copy to the device's Gallery. If you use Copy, the text is placed in Android's clipboard. The receiving app or storage provider handles its copy under its own policies. SuperScanner does not receive a report of what you do with a shared copy.</p>
+
+    <h2>Live mirroring, Supernote Linking, and local network data</h2>
+    <p>Live mirroring receives Supernote screen frames over a local-network HTTP/socket connection without HTTPS. When you explicitly pair and use Supernote Linking, text, clipboard contents, keyboard events, and supported editing shortcuts are also sent over local Wi-Fi without transport encryption. Pairing is not a guarantee of packet-level encryption or authentication. Use only a trusted private network and a device you recognize; other devices on the network may be able to observe or interfere with unencrypted traffic. Clipboard and keyboard features are experimental, and compatibility can vary by model and firmware.</p>
+
+    <h2>Permissions, ads, and tracking</h2>
+    <p>The app uses network access for device connections and OpenAI features, and may save images to Gallery when you request it. SuperScanner has no ads, analytics, or tracking SDKs. This website is static and uses no advertising or analytics trackers.</p>
+
+    <h2>Retention and policy changes</h2>
+    <p>App-private scan images and text remain on the phone until the app removes them after successful recognition, you remove them, you clear app storage, or you uninstall. Saved settings and credentials remain until you clear them in Settings or remove app storage. OpenAI and any app you choose as a share destination apply their own retention policies. We may update this policy when the app's behavior changes; the published page will show its effective date.</p>
+
+    <footer><a href="index.html">SuperScanner home</a> · Privacy contact: <a href="mailto:plesserofer@gmail.com">plesserofer@gmail.com</a></footer>
+  </main>
+</body>
+</html>

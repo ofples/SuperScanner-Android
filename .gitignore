@@ -1,0 +1,25 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+*.dpapi
+*.pfx
+captured-private-data/
+testdata/private/
+# Builds and device evidence stay local. Publish reviewed APKs as release assets.
+artifacts/*
+!artifacts/scanner-two-pages.jpg
+!artifacts/result-synthetic-recognition.jpg
+!artifacts/settings-synthetic.jpg
+!artifacts/settings-keyboard-synthetic.jpg
+*.log
+*.hprof
+*.pcap
+*.pcapng
+*.env
+.env*
