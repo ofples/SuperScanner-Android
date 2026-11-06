@@ -20,9 +20,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -58,12 +60,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -71,10 +75,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -89,6 +99,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.platform.LocalDensity
@@ -99,6 +110,60 @@ import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.runtime.snapshotFlow
+import kotlin.math.roundToInt
+
+private data class CaptureFlightRequest(val token: Long, val pageId: String)
+private data class CaptureFlight(
+    val token: Long,
+    val bitmap: android.graphics.Bitmap,
+    val source: Rect,
+    val destination: Rect,
+)
+private data class CaptureLayoutBounds(
+    val root: Rect?,
+    val preview: Rect?,
+    val thumbnail: Rect?,
+    val controls: Rect?,
+)
+
+private fun Rect.isContainedIn(bounds: Rect): Boolean =
+    left >= bounds.left && top >= bounds.top && right <= bounds.right && bottom <= bounds.bottom
+
+private fun Rect.intersects(bounds: Rect): Boolean =
+    left < bounds.right && right > bounds.left && top < bounds.bottom && bottom > bounds.top
+
+private fun Rect.shiftedVertically(distancePx: Float): Rect =
+    Rect(left, top + distancePx, right, bottom + distancePx)
+
+private fun LayoutCoordinates.rectInRoot(): Rect {
+    val position = positionInRoot()
+    return Rect(position.x, position.y, position.x + size.width, position.y + size.height)
+}
+
+@Composable
+private fun CaptureFlightOverlay(flight: CaptureFlight, progress: Float, viewport: Rect) {
+    val left = flight.source.left + (flight.destination.left - flight.source.left) * progress
+    val top = flight.source.top + (flight.destination.top - flight.source.top) * progress
+    val widthPx = flight.source.width + (flight.destination.width - flight.source.width) * progress
+    val heightPx = flight.source.height + (flight.destination.height - flight.source.height) * progress
+    val density = LocalDensity.current
+    val shape = RoundedCornerShape(12.dp)
+    Box(
+        Modifier.absoluteOffset { IntOffset((left - viewport.left).roundToInt(), (top - viewport.top).roundToInt()) }
+            .size(with(density) { widthPx.toDp() }, with(density) { heightPx.toDp() })
+            .shadow(8.dp, shape)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface)
+            .zIndex(8f)
+            .testTag("capture_flight_image"),
+    ) {
+        Image(flight.bitmap.asImageBitmap(), contentDescription = null,
+            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+    }
+}
 
 class MainActivity : ComponentActivity() {
     private val appViewModel by viewModels<AppViewModel>()
@@ -372,9 +437,18 @@ private fun ScanScreen(
     nextSamplePage: (() -> Unit)?,
 ) {
     val pageListState = rememberLazyListState()
+    val scrollState = rememberScrollState()
+    val density = LocalDensity.current
     val lastSeenCaptureToken = remember { mutableStateOf(state.captureFeedbackToken) }
     val captureFlash = remember { Animatable(0f) }
+    val flightProgress = remember { Animatable(0f) }
     var captureFeedback by remember { mutableStateOf("") }
+    var captureFlightRequest by remember { mutableStateOf<CaptureFlightRequest?>(null) }
+    var activeCaptureFlight by remember { mutableStateOf<CaptureFlight?>(null) }
+    val rootBounds = remember { mutableStateOf<Rect?>(null) }
+    val previewBounds = remember { mutableStateOf<Rect?>(null) }
+    val captureControlsBounds = remember { mutableStateOf<Rect?>(null) }
+    val thumbnailBounds = remember { mutableStateMapOf<String, Rect>() }
     var draggedPageId by remember { mutableStateOf<String?>(null) }
     var dragPointerX by remember { mutableStateOf(0f) }
     var dragPointerY by remember { mutableStateOf(0f) }
@@ -386,6 +460,7 @@ private fun ScanScreen(
         if (token <= lastSeenCaptureToken.value) return@LaunchedEffect
         lastSeenCaptureToken.value = token
         captureFeedback = "Page ${state.currentPageCount} saved."
+        captureFlightRequest = state.captureFeedbackPageId?.let { CaptureFlightRequest(token, it) }
         if (ValueAnimator.areAnimatorsEnabled()) {
             captureFlash.snapTo(0.12f)
             captureFlash.animateTo(0f, animationSpec = tween(durationMillis = 180))
@@ -395,6 +470,75 @@ private fun ScanScreen(
         delay(2_400)
         if (state.captureFeedbackToken == token) captureFeedback = ""
     }
+    val flightRequest = captureFlightRequest
+    LaunchedEffect(flightRequest, state.screen, state.isRecognizing, state.showRecognitionDisclosure, pageIds) {
+        val request = flightRequest ?: return@LaunchedEffect
+        try {
+            if (state.screen != AppScreen.SCAN || state.isRecognizing || state.showRecognitionDisclosure ||
+                !ValueAnimator.areAnimatorsEnabled() ||
+                scrollState.isScrollInProgress || pageListState.isScrollInProgress) {
+                return@LaunchedEffect
+            }
+            val bitmap = withTimeoutOrNull(700) {
+                vm.ui.first { it.thumbnails.containsKey(request.pageId) }.thumbnails[request.pageId]
+            } ?: return@LaunchedEffect
+            if (scrollState.isScrollInProgress || pageListState.isScrollInProgress) return@LaunchedEffect
+            val currentPages = vm.ui.value.pages
+            val targetIndex = currentPages.indexOfFirst { it.id == request.pageId }
+            if (targetIndex < 0) return@LaunchedEffect
+            val visibleTarget = pageListState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == request.pageId }
+            if (visibleTarget == null || visibleTarget.offset < pageListState.layoutInfo.viewportStartOffset ||
+                visibleTarget.offset + visibleTarget.size > pageListState.layoutInfo.viewportEndOffset) {
+                pageListState.animateScrollToItem(targetIndex)
+            }
+            var bounds = withTimeoutOrNull(650) {
+                snapshotFlow {
+                    CaptureLayoutBounds(rootBounds.value, previewBounds.value,
+                        thumbnailBounds[request.pageId], captureControlsBounds.value)
+                }.first { it.root != null && it.preview != null && it.thumbnail != null }
+            } ?: return@LaunchedEffect
+            val viewport = bounds.root ?: return@LaunchedEffect
+            val thumbnail = bounds.thumbnail ?: return@LaunchedEffect
+            if (!thumbnail.isContainedIn(viewport)) {
+                val controls = bounds.controls ?: return@LaunchedEffect
+                val sourceBeforeReveal = bounds.preview ?: return@LaunchedEffect
+                val delta = when {
+                    thumbnail.bottom > viewport.bottom -> thumbnail.bottom - viewport.bottom + 1f
+                    thumbnail.top < viewport.top -> thumbnail.top - viewport.top - 1f
+                    else -> 0f
+                }
+                val controlsStayVisible = controls.shiftedVertically(-delta).isContainedIn(viewport)
+                val previewRemainsVisible = sourceBeforeReveal.shiftedVertically(-delta).intersects(viewport)
+                if (delta == 0f || !controlsStayVisible || !previewRemainsVisible ||
+                    scrollState.isScrollInProgress) return@LaunchedEffect
+                scrollState.animateScrollBy(delta)
+                bounds = withTimeoutOrNull(300) {
+                    snapshotFlow {
+                        CaptureLayoutBounds(rootBounds.value, previewBounds.value,
+                            thumbnailBounds[request.pageId], captureControlsBounds.value)
+                    }.first { measured ->
+                        val measuredRoot = measured.root
+                        val measuredThumbnail = measured.thumbnail
+                        measuredRoot != null && measured.preview != null && measuredThumbnail != null &&
+                            measuredThumbnail.isContainedIn(measuredRoot)
+                    }
+                } ?: return@LaunchedEffect
+            }
+            if (scrollState.isScrollInProgress || pageListState.isScrollInProgress) return@LaunchedEffect
+            val root = bounds.root ?: return@LaunchedEffect
+            val source = bounds.preview ?: return@LaunchedEffect
+            val destination = bounds.thumbnail ?: return@LaunchedEffect
+            if (!source.intersects(root) || !destination.isContainedIn(root) ||
+                pageListState.layoutInfo.visibleItemsInfo.none { it.key == request.pageId }) return@LaunchedEffect
+
+            activeCaptureFlight = CaptureFlight(request.token, bitmap, source, destination)
+            flightProgress.snapTo(0f)
+            flightProgress.animateTo(1f, animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing))
+        } finally {
+            if (activeCaptureFlight?.token == request.token) activeCaptureFlight = null
+            if (captureFlightRequest?.token == request.token) captureFlightRequest = null
+        }
+    }
     LaunchedEffect(pendingPageOrder, pageIds, state.isSavingCapture, state.storageError) {
         val pending = pendingPageOrder ?: return@LaunchedEffect
         if (pageIds.toSet() != pending.toSet() || pageIds == pending ||
@@ -402,9 +546,15 @@ private fun ScanScreen(
             pendingPageOrder = null
         }
     }
+    LaunchedEffect(pageIds) {
+        val currentIds = pageIds.toSet()
+        thumbnailBounds.keys.filterNot(currentIds::contains).forEach(thumbnailBounds::remove)
+    }
+    LaunchedEffect(scrollState.isScrollInProgress, pageListState.isScrollInProgress) {
+        if (scrollState.isScrollInProgress || pageListState.isScrollInProgress) activeCaptureFlight = null
+    }
     val pagesById = state.pages.associateBy { it.id }
     val displayedPages = pendingPageOrder?.mapNotNull(pagesById::get) ?: state.pages
-    val density = LocalDensity.current
     val reorderEnabled = !state.isSavingCapture && !state.isSavingGallery && !state.isRecognizing && state.storageError.isBlank()
 
     LaunchedEffect(draggedPageId, reorderEnabled) {
@@ -451,239 +601,242 @@ private fun ScanScreen(
         dragGrabOffsetY = 0f
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Card(colors = CardDefaults.cardColors(containerColor = if (state.canSnap)
-            MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant)) {
-            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(Modifier.weight(1f)) {
-                    Text(state.connectionMessage, fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.semantics { contentDescription = "Mirror connection status: ${state.connectionMessage}" })
-                    Text(if (state.canSnap) "Ready to capture" else "Snap is available when the mirror is live.",
-                        style = MaterialTheme.typography.bodySmall)
-                }
-                OutlinedButton(onClick = vm::reconnect, enabled = !state.isDiscovering,
-                    modifier = Modifier.semantics { contentDescription = "Reconnect to Supernote" }) {
-                    if (state.isDiscovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Text("Reconnect")
-                }
-            }
-        }
-
-        Box(Modifier.fillMaxWidth().heightIn(min = 250.dp, max = 430.dp)
-            .clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
-            .semantics { contentDescription = "Live Supernote screen preview" }, contentAlignment = Alignment.Center) {
-            state.livePreview?.let { bitmap ->
-                Image(bitmap.asImageBitmap(), contentDescription = "Latest mirror frame",
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 430.dp), contentScale = ContentScale.Fit)
-            } ?: Column(horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Waiting for Supernote", style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("Keep Screen Mirroring open, then reconnect.", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (captureFlash.value > 0f) {
-                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = captureFlash.value))
-                    .clearAndSetSemantics { })
-            }
-        }
-
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(onClick = vm::snap, enabled = state.canSnap,
-                modifier = Modifier.weight(1f).height(58.dp).semantics { contentDescription = "Snap current page" }
-                    .testTag("snap_button")) {
-                Text(if (state.isSavingCapture) "Saving…" else "Snap", style = MaterialTheme.typography.titleMedium)
-            }
-            val emptyScan = state.pages.isEmpty()
-            Button(onClick = { if (emptyScan) vm.snapAndRecognize() else vm.openResult() },
-                enabled = (if (emptyScan) state.canSnap else state.pages.isNotEmpty()) &&
-                    !state.isSavingCapture && !state.isRecognizing && !state.isSavingGallery && state.storageError.isBlank(),
-                modifier = Modifier.weight(1f).height(58.dp).semantics {
-                    contentDescription = if (emptyScan) "Snap and recognize current page" else "Recognize captured pages"
-                }
-                    .testTag("recognize_button")) {
-                Text(if (emptyScan) "Snap & recognize" else "Recognize pages", style = MaterialTheme.typography.titleMedium)
-            }
-        }
-
-        if (sampleMode) {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+    Box(Modifier.fillMaxSize().clipToBounds()
+        .onGloballyPositioned { rootBounds.value = it.rectInRoot() }) {
+        Column(Modifier.fillMaxSize().verticalScroll(scrollState).padding(horizontal = 18.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Card(colors = CardDefaults.cardColors(containerColor = if (state.canSnap)
+                MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant)) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween) {
                     Column(Modifier.weight(1f)) {
-                        Text("Offline sample", style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold)
-                        Text("No account or network needed.", style = MaterialTheme.typography.bodySmall)
+                        Text(state.connectionMessage, fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.semantics { contentDescription = "Mirror connection status: ${state.connectionMessage}" })
                     }
-                    if (nextSamplePage != null) TextButton(onClick = nextSamplePage, enabled = state.canSnap,
-                        modifier = Modifier.testTag("next_sample_page")) { Text("Next sample page") }
+                    OutlinedButton(onClick = vm::reconnect, enabled = !state.isDiscovering,
+                        modifier = Modifier.semantics { contentDescription = "Reconnect to Supernote" }) {
+                        if (state.isDiscovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Text("Reconnect")
+                    }
                 }
             }
-        } else if (state.pages.isEmpty() && openSample != null) {
-            OutlinedButton(onClick = openSample, modifier = Modifier.fillMaxWidth().height(50.dp)
-                .testTag("try_sample_scan")) {
-                Text("Try a sample scan")
+
+            Box(Modifier.fillMaxWidth().heightIn(min = 220.dp, max = 320.dp)
+                .clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
+                .onGloballyPositioned { previewBounds.value = it.rectInRoot() }
+                .semantics { contentDescription = "Live Supernote screen preview" }, contentAlignment = Alignment.Center) {
+                state.livePreview?.let { bitmap ->
+                    Image(bitmap.asImageBitmap(), contentDescription = "Latest mirror frame",
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp), contentScale = ContentScale.Fit)
+                } ?: Column(horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Waiting for Supernote", style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Keep Screen Mirroring open, then reconnect.", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (captureFlash.value > 0f) {
+                    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = captureFlash.value))
+                        .clearAndSetSemantics { })
+                }
             }
-        }
 
-        if (captureFeedback.isNotBlank()) {
-            Text(captureFeedback, style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.semantics {
-                    contentDescription = captureFeedback
-                    liveRegion = LiveRegionMode.Polite
-                }.testTag("capture_feedback"))
-        }
-
-        if (state.isRecognizing) {
-            OutlinedButton(onClick = vm::showExistingResult,
-                modifier = Modifier.fillMaxWidth().height(48.dp)
-                    .semantics { contentDescription = "View recognition progress" }
-                    .testTag("view_recognition_progress")) {
-                Text("View progress")
+            Row(Modifier.fillMaxWidth().onGloballyPositioned { captureControlsBounds.value = it.rectInRoot() },
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = vm::snap, enabled = state.canSnap,
+                    modifier = Modifier.weight(1f).height(58.dp).semantics { contentDescription = "Snap current page" }
+                        .testTag("snap_button")) {
+                    Text(if (state.isSavingCapture) "Saving…" else "Snap", style = MaterialTheme.typography.titleMedium)
+                }
+                val emptyScan = state.pages.isEmpty()
+                Button(onClick = { if (emptyScan) vm.snapAndRecognize() else vm.openResult() },
+                    enabled = (if (emptyScan) state.canSnap else state.pages.isNotEmpty()) &&
+                        !state.isSavingCapture && !state.isRecognizing && !state.isSavingGallery && state.storageError.isBlank(),
+                    modifier = Modifier.weight(1f).height(58.dp).semantics {
+                        contentDescription = if (emptyScan) "Snap and recognize current page" else "Recognize captured pages"
+                    }
+                        .testTag("recognize_button")) {
+                    Text(if (emptyScan) "Snap & recognize" else "Recognize pages", style = MaterialTheme.typography.titleMedium)
+                }
             }
-        }
 
-        if (state.resultText.isNotBlank()) {
-            OutlinedButton(onClick = vm::showExistingResult, modifier = Modifier.fillMaxWidth()
-                .height(50.dp).testTag("view_existing_text")) {
-                Text("View saved text")
+            if (sampleMode) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Offline sample", style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold)
+                            Text("No account or network needed.", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (nextSamplePage != null) TextButton(onClick = nextSamplePage, enabled = state.canSnap,
+                            modifier = Modifier.testTag("next_sample_page")) { Text("Next sample page") }
+                    }
+                }
+            } else if (state.pages.isEmpty() && openSample != null) {
+                OutlinedButton(onClick = openSample, modifier = Modifier.fillMaxWidth().height(50.dp)
+                    .testTag("try_sample_scan")) {
+                    Text("Try a sample scan")
+                }
             }
-        }
 
-        if (state.pages.isNotEmpty()) {
-            Text("Captured pages  ·  ${state.pages.size}/${SessionStore.MAX_PAGES}", style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold)
-            Box(Modifier.fillMaxWidth().height(170.dp)
-                .pointerInput(reorderEnabled) {
-                    if (reorderEnabled) {
-                        awaitEachGesture {
-                            // Observe before LazyRow and thumbnail click handlers so they cannot cancel the held drag.
-                            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                            val pointerId = down.id
-                            val start = down.position
-                            val longPressReached = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                                while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                                    val change = event.changes.firstOrNull { it.id == pointerId }
-                                    if (change == null || !change.pressed) {
-                                        return@withTimeoutOrNull false
+            if (captureFeedback.isNotBlank()) {
+                Text(captureFeedback, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.semantics {
+                        contentDescription = captureFeedback
+                        liveRegion = LiveRegionMode.Polite
+                    }.testTag("capture_feedback"))
+            }
+
+            if (state.isRecognizing) {
+                OutlinedButton(onClick = vm::showExistingResult,
+                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                        .semantics { contentDescription = "View recognition progress" }
+                        .testTag("view_recognition_progress")) {
+                    Text("View progress")
+                }
+            }
+
+            if (state.resultText.isNotBlank()) {
+                OutlinedButton(onClick = vm::showExistingResult, modifier = Modifier.fillMaxWidth()
+                    .height(50.dp).testTag("view_existing_text")) {
+                    Text("View saved text")
+                }
+            }
+
+            if (state.pages.isNotEmpty()) {
+                Text("Captured pages  ·  ${state.pages.size}/${SessionStore.MAX_PAGES}", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold)
+                Box(Modifier.fillMaxWidth().height(170.dp)
+                    .pointerInput(reorderEnabled) {
+                        if (reorderEnabled) {
+                            awaitEachGesture {
+                                // Observe before LazyRow and thumbnail click handlers so they cannot cancel the held drag.
+                                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                val pointerId = down.id
+                                val start = down.position
+                                val longPressReached = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        val change = event.changes.firstOrNull { it.id == pointerId }
+                                        if (change == null || !change.pressed) {
+                                            return@withTimeoutOrNull false
+                                        }
+                                        if ((change.position - start).getDistance() > viewConfiguration.touchSlop) {
+                                            return@withTimeoutOrNull false
+                                        }
                                     }
-                                    if ((change.position - start).getDistance() > viewConfiguration.touchSlop) {
-                                        return@withTimeoutOrNull false
-                                    }
+                                    false
+                                } == null
+
+                                if (!longPressReached) return@awaitEachGesture
+
+                                val item = pageListState.layoutInfo.visibleItemsInfo.firstOrNull {
+                                    start.x >= it.offset && start.x < it.offset + it.size
                                 }
-                                false
-                            } == null
+                                val id = item?.key as? String
+                                if (id == null || vm.ui.value.pages.none { it.id == id }) {
+                                    return@awaitEachGesture
+                                }
 
-                            if (!longPressReached) return@awaitEachGesture
-
-                            val item = pageListState.layoutInfo.visibleItemsInfo.firstOrNull {
-                                start.x >= it.offset && start.x < it.offset + it.size
-                            }
-                            val id = item?.key as? String
-                            if (id == null || vm.ui.value.pages.none { it.id == id }) {
-                                return@awaitEachGesture
-                            }
-
-                            draggedPageId = id
-                            dragPointerX = start.x
-                            dragPointerY = start.y
-                            dragGrabOffsetY = start.y
-                            try {
-                                while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                                    val change = event.changes.firstOrNull { it.id == pointerId }
-                                    if (change == null) {
+                                draggedPageId = id
+                                dragPointerX = start.x
+                                dragPointerY = start.y
+                                dragGrabOffsetY = start.y
+                                try {
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        val change = event.changes.firstOrNull { it.id == pointerId }
+                                        if (change == null) {
+                                            draggedPageId = null
+                                            dragPointerX = 0f
+                                            dragPointerY = 0f
+                                            dragGrabOffsetY = 0f
+                                            break
+                                        }
+                                        if (!change.pressed) {
+                                            change.consume()
+                                            dragPointerX = change.position.x
+                                            dragPointerY = change.position.y
+                                            finishPageDrag(id)
+                                            break
+                                        }
+                                        val position = change.position
+                                        dragPointerX = position.x
+                                        dragPointerY = position.y
+                                        change.consume()
+                                    }
+                                } finally {
+                                    if (draggedPageId == id) {
                                         draggedPageId = null
                                         dragPointerX = 0f
                                         dragPointerY = 0f
                                         dragGrabOffsetY = 0f
-                                        break
                                     }
-                                    if (!change.pressed) {
-                                        change.consume()
-                                        dragPointerX = change.position.x
-                                        dragPointerY = change.position.y
-                                        finishPageDrag(id)
-                                        break
-                                    }
-                                    val position = change.position
-                                    dragPointerX = position.x
-                                    dragPointerY = position.y
-                                    change.consume()
-                                }
-                            } finally {
-                                if (draggedPageId == id) {
-                                    draggedPageId = null
-                                    dragPointerX = 0f
-                                    dragPointerY = 0f
-                                    dragGrabOffsetY = 0f
                                 }
                             }
                         }
                     }
-                }
-                .semantics {
-                    contentDescription = "Captured pages. Long press and drag a thumbnail to reorder."
-                }
-                .testTag("page_thumbnail_row")) {
-                LazyRow(state = pageListState, horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxSize()) {
-                    itemsIndexed(displayedPages, key = { _, page -> page.id }) { index, page ->
-                        PageThumbnail(page = page, number = index + 1, bitmap = state.thumbnails[page.id],
-                            index = index, allPages = state.pages, vm = vm, canReorder = reorderEnabled,
-                            isDragged = draggedPageId == page.id)
+                    .semantics {
+                        contentDescription = "Captured pages. Long press and drag a thumbnail to reorder."
                     }
-                }
-                val ghostPage = draggedPageId?.let { id -> state.pages.firstOrNull { it.id == id } }
-                if (ghostPage != null) {
-                    val ghostIndex = state.pages.indexOfFirst { it.id == ghostPage.id }
-                    val ghostBitmap = state.thumbnails[ghostPage.id]
-                    Box(Modifier.offset(
-                        x = with(density) { (dragPointerX - 64.dp.toPx()).toDp() },
-                        y = with(density) { (dragPointerY - dragGrabOffsetY).toDp() },
-                    ).width(128.dp).height(160.dp).zIndex(2f)
-                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
-                        .padding(8.dp).clearAndSetSemantics { }) {
-                        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                            Box(Modifier.fillMaxWidth().height(118.dp).clip(RoundedCornerShape(8.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
-                                ghostBitmap?.let { Image(it.asImageBitmap(), contentDescription = null,
-                                    Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
-                                    ?: Text("Page ${ghostIndex + 1}")
+                    .testTag("page_thumbnail_row")) {
+                    LazyRow(state = pageListState, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxSize()) {
+                        itemsIndexed(displayedPages, key = { _, page -> page.id }) { index, page ->
+                            PageThumbnail(page = page, number = index + 1, bitmap = state.thumbnails[page.id],
+                                index = index, allPages = state.pages, vm = vm, canReorder = reorderEnabled,
+                                isDragged = draggedPageId == page.id,
+                                onBounds = { id, rect -> thumbnailBounds[id] = rect })
+                        }
+                    }
+                    val ghostPage = draggedPageId?.let { id -> state.pages.firstOrNull { it.id == id } }
+                    if (ghostPage != null) {
+                        val ghostIndex = state.pages.indexOfFirst { it.id == ghostPage.id }
+                        val ghostBitmap = state.thumbnails[ghostPage.id]
+                        Box(Modifier.offset(
+                            x = with(density) { (dragPointerX - 64.dp.toPx()).toDp() },
+                            y = with(density) { (dragPointerY - dragGrabOffsetY).toDp() },
+                        ).width(128.dp).height(160.dp).zIndex(2f)
+                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+                            .padding(8.dp).clearAndSetSemantics { }) {
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Box(Modifier.fillMaxWidth().height(118.dp).clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+                                    ghostBitmap?.let { Image(it.asImageBitmap(), contentDescription = null,
+                                        Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+                                        ?: Text("Page ${ghostIndex + 1}")
+                                }
+                                Text("Page ${ghostIndex + 1}", style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Medium)
                             }
-                            Text("Page ${ghostIndex + 1}", style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Medium)
                         }
                     }
                 }
-            }
 
-            OutlinedButton(onClick = vm::requestClearPages,
-                enabled = !state.isSavingCapture && !state.isRecognizing && !state.isSavingGallery && state.storageError.isBlank(),
-                modifier = Modifier.fillMaxWidth().height(50.dp).testTag("clear_pages")) {
-                Text("Clear pages")
+                OutlinedButton(onClick = vm::requestClearPages,
+                    enabled = !state.isSavingCapture && !state.isRecognizing && !state.isSavingGallery && state.storageError.isBlank(),
+                    modifier = Modifier.fillMaxWidth().height(50.dp).testTag("clear_pages")) {
+                    Text("Clear pages")
+                }
             }
-        } else if (!sampleMode) {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                Text("No pages saved. Snap a live screen to start a scan.",
-                    Modifier.fillMaxWidth().padding(14.dp), style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (state.notice.isNotBlank()) {
+                Text(state.notice, color = if (state.storageError.isNotBlank()) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.primary, modifier = Modifier.semantics { contentDescription = state.notice })
             }
-        }
-        if (state.notice.isNotBlank()) {
-            Text(state.notice, color = if (state.storageError.isNotBlank()) MaterialTheme.colorScheme.error
-                else MaterialTheme.colorScheme.primary, modifier = Modifier.semantics { contentDescription = state.notice })
-        }
-        if (state.storageError.isNotBlank()) {
-            OutlinedButton(onClick = vm::requestNewScan, modifier = Modifier.fillMaxWidth()) {
-                Text("Discard damaged saved scan and start fresh")
+            if (state.storageError.isNotBlank()) {
+                OutlinedButton(onClick = vm::requestNewScan, modifier = Modifier.fillMaxWidth()) {
+                    Text("Discard damaged saved scan and start fresh")
+                }
             }
+            Spacer(Modifier.height(8.dp))
         }
-        Spacer(Modifier.height(8.dp))
+        val flight = activeCaptureFlight
+        val viewport = rootBounds.value
+        if (flight != null && viewport != null && !scrollState.isScrollInProgress && !pageListState.isScrollInProgress) {
+            CaptureFlightOverlay(flight, flightProgress.value, viewport)
+        }
     }
 }
 
@@ -697,6 +850,7 @@ private fun PageThumbnail(
     vm: AppViewModel,
     canReorder: Boolean,
     isDragged: Boolean,
+    onBounds: (String, Rect) -> Unit,
 ) {
     val id = page.id
     Card(
@@ -719,7 +873,9 @@ private fun PageThumbnail(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Box(Modifier.fillMaxWidth().height(118.dp).clip(RoundedCornerShape(8.dp))
+            Box(Modifier.fillMaxWidth().height(118.dp)
+                .onGloballyPositioned { onBounds(id, it.rectInRoot()) }
+                .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .clickable { vm.openPage(id) }.semantics { contentDescription = "Open page $number preview" },
                 contentAlignment = Alignment.Center) {
@@ -756,8 +912,6 @@ private fun ResultScreen(state: AppUiState, vm: AppViewModel, context: Context) 
                 modifier = Modifier.fillMaxWidth().height(54.dp).testTag("recognize_retry")) {
                 Text(if (state.resultText.isNotBlank()) "Recognize again" else if (state.recognitionError.isNotBlank()) "Try recognition again" else "Recognize pages")
             }
-            if (state.resultText.isNotBlank() && !vm.isSample) Text("Recognizing again sends these pages to the selected provider.",
-                style = MaterialTheme.typography.bodySmall)
         }
         if (state.isRecognizing) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
@@ -802,7 +956,8 @@ private fun ResultScreen(state: AppUiState, vm: AppViewModel, context: Context) 
             OutlinedButton(onClick = { shareText(context, state.resultText) }, enabled = state.resultText.isNotEmpty(),
                 modifier = Modifier.weight(1f).height(54.dp).semantics { contentDescription = "Share recognized text" }) { Text("Share") }
         }
-        OutlinedButton(onClick = vm::openScanFromResult, modifier = Modifier.fillMaxWidth().height(54.dp).testTag("back_to_scan")) {
+        OutlinedButton(onClick = vm::openScanFromResult,
+            modifier = Modifier.fillMaxWidth().height(54.dp).testTag("back_to_scan")) {
             Text("Back to scan")
         }
     }
@@ -1003,7 +1158,7 @@ private fun PagePreview(
             color = MaterialTheme.colorScheme.error,
             modifier = Modifier.semantics { contentDescription = "Gallery save error: ${state.gallerySaveError}" })
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            TextButton(onClick = vm::closePreview, enabled = !isSharingOriginal,
+            OutlinedButton(onClick = vm::closePreview, enabled = !isSharingOriginal,
                 modifier = Modifier.weight(1f).height(54.dp)
                     .semantics { contentDescription = "Back to scan" }) { Text("Back to scan") }
             OutlinedButton(onClick = { id?.let(vm::askDeletePage) }, enabled = !state.isSavingGallery && !isSharingOriginal,

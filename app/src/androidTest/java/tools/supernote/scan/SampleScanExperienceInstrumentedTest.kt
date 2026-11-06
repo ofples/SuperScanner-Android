@@ -2,9 +2,11 @@ package tools.supernote.scan
 
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.view.View
+import android.animation.ValueAnimator
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -47,6 +49,57 @@ class SampleScanExperienceInstrumentedTest {
     private val syntheticGalleryUris = mutableListOf<Uri>()
 
     @Test
+    fun committedThumbnailFlightUsesSavedBitmapWhenMotionIsEnabled() {
+        val previousAnimatorScale = shell("settings get global animator_duration_scale").trim()
+        try {
+            shell("settings put global animator_duration_scale 1.0")
+            assertTrue("This focused visual regression must run with motion enabled.", ValueAnimator.areAnimatorsEnabled())
+            compose.mainClock.autoAdvance = false
+
+            compose.onNodeWithTag("snap_button").performClick()
+            val deadline = SystemClock.uptimeMillis() + 10_000
+            while (store.loadSession().pages.isEmpty() && SystemClock.uptimeMillis() < deadline) {
+                SystemClock.sleep(20)
+            }
+            val page = store.loadSession().pages.singleOrNull()
+                ?: error("The capture did not commit before the visual-flight check.")
+            assertArrayEquals("The committed original must remain byte-for-byte unchanged.",
+                SampleNotes.pages.first().image, File(page.path).readBytes())
+
+            var flightVisible = false
+            val flightDeadline = SystemClock.uptimeMillis() + 5_000
+            while (!flightVisible && SystemClock.uptimeMillis() < flightDeadline) {
+                compose.mainClock.advanceTimeByFrame()
+                compose.waitForIdle()
+                flightVisible = runCatching {
+                    compose.onNodeWithTag("capture_flight_image").assertExists()
+                }.isSuccess
+                if (!flightVisible) SystemClock.sleep(16)
+            }
+            assertTrue("The committed thumbnail bitmap should briefly fly into the saved-page strip.", flightVisible)
+            compose.mainClock.advanceTimeBy(120, ignoreFrameDuration = true)
+            compose.waitForIdle()
+            compose.onNodeWithTag("capture_flight_image").assertExists()
+            captureEvidence("capture-flight-mid-motion")
+
+            compose.mainClock.advanceTimeBy(220, ignoreFrameDuration = true)
+            compose.waitForIdle()
+            compose.onNodeWithTag("capture_flight_image").assertDoesNotExist()
+            compose.onNodeWithTag("capture_feedback").assertTextEquals("Page 1 saved.")
+            compose.onNodeWithText("Page 1 captured.").assertDoesNotExist()
+            assertEquals(1, store.loadSession().pages.size)
+            assertArrayEquals(SampleNotes.pages.first().image, File(page.path).readBytes())
+        } finally {
+            compose.mainClock.autoAdvance = true
+            if (previousAnimatorScale.isBlank() || previousAnimatorScale == "null") {
+                shell("settings delete global animator_duration_scale")
+            } else {
+                shell("settings put global animator_duration_scale $previousAnimatorScale")
+            }
+        }
+    }
+
+    @Test
     fun capturesPreviewsZoomsSharesSavesAndRecognizesOfflineSample() {
         compose.onNodeWithText("Offline sample").assertExists()
         compose.onNodeWithText("No account or network needed.").assertExists()
@@ -60,26 +113,23 @@ class SampleScanExperienceInstrumentedTest {
         compose.waitUntil(15_000) { store.loadSession().pages.size == 1 }
         val first = store.loadSession().pages.single()
         assertArrayEquals(SampleNotes.pages[0].image, File(first.path).readBytes())
+        compose.onNodeWithTag("scan_thumbnail_${first.id}").assertExists()
         compose.waitUntil(5_000) {
             runCatching { compose.onNodeWithTag("capture_feedback").assertTextEquals("Page 1 saved.") }.isSuccess
         }
 
-        // Wait out the short save confirmation, then wait for pixels in the live preview to
-        // change before snapping. The sample source switches frames asynchronously.
+        // Wait out the short save confirmation, then request the next sample page. Snap only
+        // after its frame is ready; the exact saved image bytes below verify the selected page.
         SystemClock.sleep(1_250)
         compose.waitForIdle()
-        val previousLiveImage = captureLatestFrame()
-        try {
-            compose.onNodeWithTag("next_sample_page").performScrollTo()
-            compose.waitUntil(5_000) {
-                runCatching { compose.onNodeWithTag("next_sample_page").assertIsEnabled() }.isSuccess
-            }
-            compose.onNodeWithTag("next_sample_page").performClick()
-            compose.waitUntil(10_000) {
-                captureLatestFrame().useBitmap { !previousLiveImage.sameAs(it) }
-            }
-        } finally {
-            previousLiveImage.recycle()
+        compose.onNodeWithTag("next_sample_page").performScrollTo()
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("next_sample_page").assertIsEnabled() }.isSuccess
+        }
+        compose.onNodeWithTag("next_sample_page").performClick()
+        compose.waitForIdle()
+        compose.waitUntil(10_000) {
+            runCatching { compose.onNodeWithTag("snap_button").assertIsEnabled() }.isSuccess
         }
         compose.onNodeWithTag("snap_button").assertIsEnabled()
         compose.onNodeWithTag("snap_button").performClick()
@@ -87,12 +137,20 @@ class SampleScanExperienceInstrumentedTest {
         val capturedPages = store.loadSession().pages
         assertArrayEquals(SampleNotes.pages[0].image, File(capturedPages[0].path).readBytes())
         assertArrayEquals(SampleNotes.pages[1].image, File(capturedPages[1].path).readBytes())
+        capturedPages.forEach { compose.onNodeWithTag("scan_thumbnail_${it.id}").assertExists() }
         compose.waitUntil(5_000) {
             runCatching { compose.onNodeWithTag("capture_feedback").assertTextEquals("Page 2 saved.") }.isSuccess
         }
         compose.onNodeWithTag("page_thumbnail_row").assertExists()
+        compose.onNodeWithTag("page_thumbnail_row").performScrollTo()
         compose.onNodeWithContentDescription("Open page 2 preview").performScrollTo().performClick()
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("page_zoom_viewer").assertExists() }.isSuccess
+        }
         compose.onNodeWithTag("page_zoom_viewer").assertExists()
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithContentDescription("Captured page image").assertExists() }.isSuccess
+        }
         compose.onNodeWithContentDescription("Captured page image").assertExists()
         compose.onNodeWithContentDescription("Reset page zoom").assertExists()
         captureEvidence("sample-preview-fit")
@@ -205,19 +263,9 @@ class SampleScanExperienceInstrumentedTest {
         image.recycle()
     }
 
-    private fun captureLatestFrame(): Bitmap {
-        val nodeBounds = compose.onNodeWithContentDescription("Latest mirror frame").fetchSemanticsNode().boundsInRoot
-        val content = compose.activity.findViewById<View>(android.R.id.content)
-        val location = IntArray(2).also(content::getLocationOnScreen)
-        val density = compose.activity.resources.displayMetrics.density
-        val screen = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
-            ?: error("Could not inspect the synthetic mirror frame.")
-        val left = (location[0] + nodeBounds.left * density).toInt().coerceIn(0, screen.width - 1)
-        val top = (location[1] + nodeBounds.top * density).toInt().coerceIn(0, screen.height - 1)
-        val right = (location[0] + nodeBounds.right * density).toInt().coerceIn(left + 1, screen.width)
-        val bottom = (location[1] + nodeBounds.bottom * density).toInt().coerceIn(top + 1, screen.height)
-        return try { Bitmap.createBitmap(screen, left, top, right - left, bottom - top) }
-        finally { screen.recycle() }
+    private fun shell(command: String): String {
+        val descriptor = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        return ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().use { it.readText() }
     }
 
     private fun captureZoomableImage(): Bitmap {

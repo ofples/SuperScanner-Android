@@ -127,7 +127,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'bundletool validation of the AAB failed.' }
     $manifestText = & $javaPath -jar $bundletoolPath dump manifest --bundle=$sourceBundle --module=base 2>$null | Out-String
     if ($LASTEXITCODE -ne 0 -or $manifestText -notmatch 'package="com\.yukti\.superscanner"' -or
-        $manifestText -notmatch 'android:versionCode="13"' -or $manifestText -notmatch 'android:versionName="0\.5\.0"' -or
+        $manifestText -notmatch 'android:versionCode="14"' -or $manifestText -notmatch 'android:versionName="0\.5\.1"' -or
         $manifestText -notmatch 'android:minSdkVersion="26"' -or $manifestText -notmatch 'android:targetSdkVersion="36"') {
         throw 'AAB manifest package, version, min SDK, or target SDK did not match the expected release.'
     }
@@ -142,7 +142,7 @@ try {
     }
 
     $badging = & $aapt dump badging $sourceApk 2>$null | Out-String
-    if ($LASTEXITCODE -ne 0 -or $badging -notmatch "(?m)^package: name='com\.yukti\.superscanner' versionCode='13' versionName='0\.5\.0'") {
+    if ($LASTEXITCODE -ne 0 -or $badging -notmatch "(?m)^package: name='com\.yukti\.superscanner' versionCode='14' versionName='0\.5\.1'") {
         throw 'Release APK package or version metadata did not match the expected release.'
     }
     if ($badging -notmatch "(?m)^sdkVersion:'26'\s*$" -or $badging -notmatch "(?m)^targetSdkVersion:'36'\s*$") {
@@ -178,12 +178,12 @@ try {
 
     $releaseDirectory = Join-Path $projectRoot 'artifacts\release'
     [void][System.IO.Directory]::CreateDirectory($releaseDirectory)
-    $stagingBundle = Join-Path $releaseDirectory ".superscanner-0.5.0-$([Guid]::NewGuid().ToString('N')).aab.tmp"
-    $stagingApk = Join-Path $releaseDirectory ".superscanner-0.5.0-$([Guid]::NewGuid().ToString('N')).apk.tmp"
+    $stagingBundle = Join-Path $releaseDirectory ".superscanner-0.5.1-$([Guid]::NewGuid().ToString('N')).aab.tmp"
+    $stagingApk = Join-Path $releaseDirectory ".superscanner-0.5.1-$([Guid]::NewGuid().ToString('N')).apk.tmp"
     Copy-Item -LiteralPath $sourceBundle -Destination $stagingBundle
     Copy-Item -LiteralPath $sourceApk -Destination $stagingApk
-    $bundle = Join-Path $releaseDirectory 'superscanner-0.5.0.aab'
-    $apk = Join-Path $releaseDirectory 'superscanner-0.5.0-release.apk'
+    $bundle = Join-Path $releaseDirectory 'superscanner-0.5.1.aab'
+    $apk = Join-Path $releaseDirectory 'superscanner-0.5.1-release.apk'
     Move-Item -LiteralPath $stagingBundle -Destination $bundle -Force
     $stagingBundle = $null
     Move-Item -LiteralPath $stagingApk -Destination $apk -Force

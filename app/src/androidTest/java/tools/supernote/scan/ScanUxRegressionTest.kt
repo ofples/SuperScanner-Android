@@ -224,7 +224,7 @@ class ScanUxRegressionTest {
     fun recognitionKeepsPriorTextVisibleAndNeverRendersIntermediateDeltas() {
         val testStore = newStore()
         seedPages(testStore, count = 1, result = "prior synthetic text")
-        val recognition = TestRecognition()
+        val recognition = TestRecognition(hasConfiguredApiKey = true)
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<String>()
         recognition.action = { received, _, onDelta ->
@@ -240,6 +240,7 @@ class ScanUxRegressionTest {
         compose.onNodeWithTag("recognition_result_text").assertTextContains("prior synthetic text")
         compose.onNodeWithTag("recognition_progress").assertExists()
         compose.onNodeWithText("PRIVATE_INTERMEDIATE_FIXTURE_DELTA").assertDoesNotExist()
+        compose.onNodeWithText("Recognizing again sends these pages to the selected provider.").assertDoesNotExist()
         assertEquals("prior synthetic text", viewModel.ui.value.resultText)
 
         release.complete("final synthetic text")
@@ -433,12 +434,12 @@ class ScanUxRegressionTest {
         fun disconnect() = Unit
     }
 
-    private class TestRecognition : RecognitionSource {
+    private class TestRecognition(private val hasConfiguredApiKey: Boolean = false) : RecognitionSource {
         @Volatile var receivedIds: List<String> = emptyList()
         var action: suspend (List<CapturedPage>, ScanSettings, (String) -> Unit) -> String =
             { _, _, _ -> "synthetic recognition result" }
 
-        override fun hasApiKey() = false
+        override fun hasApiKey() = hasConfiguredApiKey
         override fun setApiKey(value: String) = Unit
         override fun subscriptionStatus() = ""
         override fun isChatGptConnected() = false

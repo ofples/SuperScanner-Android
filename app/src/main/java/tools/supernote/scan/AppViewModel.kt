@@ -85,6 +85,7 @@ internal data class AppUiState(
     val isSavingCapture: Boolean = false,
     val currentPageCount: Int = 0,
     val captureFeedbackToken: Long = 0,
+    val captureFeedbackPageId: String? = null,
     val resultText: String = "",
     val recognitionDraft: String = "",
     val isRecognizing: Boolean = false,
@@ -592,7 +593,7 @@ internal class AppViewModel internal constructor(
                         if (expectedGeneration == captureGeneration && expectedSession == sessionId) {
                             _ui.update { it.copy(pages = candidate, currentPageCount = candidate.size,
                                 captureFeedbackToken = it.captureFeedbackToken + 1,
-                                isSavingCapture = false, notice = "Page ${candidate.size} captured.") }
+                                captureFeedbackPageId = page.id, isSavingCapture = false, notice = "") }
                         }
                     }
                     candidate
